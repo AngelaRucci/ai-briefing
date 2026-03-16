@@ -1,0 +1,193 @@
+const https = require('https');
+
+const today = new Date().toLocaleDateString('en-US', {
+  weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+  timeZone: 'America/Los_Angeles'
+});
+
+const prompt = `Today is ${today}. You are researching a daily AI briefing for a senior fullstack software engineer who uses Claude heavily in their development workflow and shares findings with their engineering team.
+
+Search the web for the latest news and updates from the last 48 hours. Return exactly 5-7 items total, prioritizing the most actionable and impactful findings. Focus on:
+
+- Claude & Anthropic — You may include a maximum of 1 item pulled from official Claude/Anthropic release notes or changelogs. All other Claude/Anthropic items must come from what engineers are actually talking about on X/Twitter, Hacker News, Reddit, dev blogs — a workflow that went viral, a trick someone discovered, a thread blowing up, a blog post getting shared around. Real community signal, not official announcements.
+- Claude Code tips & tricks — Workflows, shortcuts, or techniques that make Claude Code more effective for engineers
+- MCP servers — New or noteworthy MCP servers useful for software engineers and dev workflows
+- Open source repos — Recently created or recently gone viral repos (launched or gained significant traction in the last 7 days). Look for things people are just now discovering and sharing — high star velocity, recent launch tweets, or repos that just crossed a tipping point. Search X/Twitter, Hacker News, and trendshift.io for what engineers are sharing right now, not what has been popular for months.
+
+Rules:
+- Skip hype, marketing, and business news
+- Skip repos that have been well-known for months
+- Focus on things that change how engineers actually write, ship, and maintain software
+- Teach something new — each item should give the reader a concept, technique, or tool they likely have not seen yet
+- Each item: short headline, 2-3 sentence summary of why it matters to an engineer, and a link
+- Lead with the most actionable items first
+- Format your entire response as a single valid JSON object with no markdown, no backticks, just raw JSON:
+
+{
+  "intro": "1-2 sentence summary of today's most important themes",
+  "items": [
+    {
+      "category": "community|claude-official|repo|mcp|tip",
+      "label": "Short badge label e.g. Community · HN today",
+      "title": "Short punchy headline",
+      "summary": "2-3 sentences on why this matters to a senior engineer",
+      "url": "https://...",
+      "url2": "https://... or null",
+      "url2_label": "label for second link or null",
+      "code_snippet": "short inline code example if relevant, or null"
+    }
+  ]
+}`;
+
+function callAnthropic(prompt) {
+  return new Promise((resolve, reject) => {
+    const body = JSON.stringify({
+      model: 'claude-sonnet-4-20250514',
+      max_tokens: 4000,
+      tools: [{ type: 'web_search_20250305', name: 'web_search' }],
+      messages: [{ role: 'user', content: prompt }]
+    });
+
+    const req = https.request({
+      hostname: 'api.anthropic.com',
+      path: '/v1/messages',
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'anthropic-version': '2023-06-01',
+        'x-api-key': process.env.ANTHROPIC_API_KEY,
+        'Content-Length': Buffer.byteLength(body)
+      }
+    }, (res) => {
+      let data = '';
+      res.on('data', chunk => data += chunk);
+      res.on('end', () => {
+        try {
+          const parsed = JSON.parse(data);
+          const text = (parsed.content || [])
+            .filter(b => b.type === 'text')
+            .map(b => b.text)
+            .join('');
+          const match = text.match(/\{[\s\S]*\}/);
+          if (!match) throw new Error('No JSON in response: ' + text.slice(0, 300));
+          resolve(JSON.parse(match[0]));
+        } catch(e) { reject(e); }
+      });
+    });
+    req.on('error', reject);
+    req.write(body);
+    req.end();
+  });
+}
+
+function categoryColor(cat) {
+  const map = {
+    'community':      '#b45309',
+    'claude-official':'#1d4ed8',
+    'repo':           '#15803d',
+    'mcp':            '#6d28d9',
+    'tip':            '#0e7490',
+  };
+  return map[cat] || '#374151';
+}
+
+function buildHtml(data) {
+  const itemsHtml = data.items.map(item => {
+    const color = categoryColor(item.category);
+    const snippet = item.code_snippet
+      ? `<div style="margin:8px 0 0;background:#f3f4f6;border-radius:4px;padding:8px 12px;font-family:monospace;font-size:12px;color:#111827;">${item.code_snippet}</div>`
+      : '';
+    const link2 = item.url2
+      ? ` &nbsp;·&nbsp; <a href="${item.url2}" style="color:#2563eb;font-size:12px;">${item.url2_label || 'link 2'} ↗</a>`
+      : '';
+    const domain = item.url.replace(/^https?:\/\//, '').split('/').slice(0, 2).join('/');
+    return `
+      <div style="padding:16px 20px;border-bottom:1px solid #e5e7eb;background:#fff;">
+        <div style="margin-bottom:6px;">
+          <span style="display:inline-block;font-size:11px;padding:2px 10px;border-radius:20px;background:${color}1a;color:${color};font-weight:600;">${item.label}</span>
+        </div>
+        <p style="margin:0 0 6px;font-size:15px;font-weight:600;color:#111827;line-height:1.4;">${item.title}</p>
+        <p style="margin:0 0 8px;font-size:13px;color:#374151;line-height:1.65;">${item.summary}</p>
+        ${snippet}
+        <div style="margin-top:8px;">
+          <a href="${item.url}" style="color:#2563eb;font-size:12px;">${domain} ↗</a>
+          ${link2}
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  return `<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="margin:0;padding:0;background:#f9fafb;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
+  <div style="max-width:640px;margin:32px auto;background:#fff;border-radius:8px;overflow:hidden;border:1px solid #e5e7eb;">
+    <div style="padding:24px 20px 16px;border-bottom:1px solid #e5e7eb;">
+      <p style="margin:0 0 2px;font-size:11px;color:#9ca3af;text-transform:uppercase;letter-spacing:0.05em;">${today}</p>
+      <h1 style="margin:0 0 8px;font-size:20px;font-weight:700;color:#111827;">AI Engineering Briefing</h1>
+      <p style="margin:0;font-size:13px;color:#6b7280;line-height:1.6;">${data.intro}</p>
+    </div>
+    ${itemsHtml}
+    <div style="padding:16px 20px;background:#f9fafb;border-top:1px solid #e5e7eb;">
+      <p style="margin:0;font-size:11px;color:#9ca3af;">Researched by Claude · ${data.items.length} items · ${today}</p>
+    </div>
+  </div>
+</body>
+</html>`;
+}
+
+function sendEmail(html, intro) {
+  return new Promise((resolve, reject) => {
+    const subject = 'AI Engineering Briefing — ' + today;
+    const body = JSON.stringify({
+      personalizations: [{ to: [{ email: process.env.TO_EMAIL }] }],
+      from: { email: process.env.FROM_EMAIL, name: 'AI Briefing' },
+      subject,
+      content: [
+        { type: 'text/plain', value: intro },
+        { type: 'text/html', value: html }
+      ]
+    });
+
+    const req = https.request({
+      hostname: 'api.sendgrid.com',
+      path: '/v3/mail/send',
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + process.env.SENDGRID_API_KEY,
+        'Content-Length': Buffer.byteLength(body)
+      }
+    }, (res) => {
+      console.log('SendGrid status:', res.statusCode);
+      let responseBody = '';
+      res.on('data', d => responseBody += d);
+      res.on('end', () => {
+        if (responseBody) console.log('SendGrid response:', responseBody);
+        resolve(res.statusCode);
+      });
+    });
+    req.on('error', reject);
+    req.write(body);
+    req.end();
+  });
+}
+
+(async () => {
+  try {
+    console.log('Calling Anthropic API...');
+    const data = await callAnthropic(prompt);
+    console.log('Got', data.items.length, 'items');
+    const html = buildHtml(data);
+    console.log('Sending email...');
+    const status = await sendEmail(html, data.intro);
+    if (status >= 200 && status < 300) {
+      console.log('Email sent successfully');
+    } else {
+      throw new Error('SendGrid returned status ' + status);
+    }
+  } catch(e) {
+    console.error('Error:', e.message);
+    process.exit(1);
+  }
+})();
