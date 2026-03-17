@@ -4,7 +4,7 @@ on:
   schedule:
     # 8:00 AM PST = 16:00 UTC (standard time, Nov-Mar)
     # Change to 15:00 UTC in summer for 8:00 AM PDT
-    - cron: '0 16 * * *'
+    - cron: '0 15 * * *'
   workflow_dispatch: # allows manual trigger from GitHub UI
 
 jobs:
